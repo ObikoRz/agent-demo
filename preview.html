@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#22c55e" />
+<title>Agent Fitness - UI Preview</title>
+<style>
+  /* 加载提示样式 - 防止白屏焦虑 */
+  .loading-screen {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; background: #f8fafc; color: #334155; font-family: -apple-system, sans-serif;
+    z-index: 9999; transition: opacity 0.3s;
+  }
+  .spinner {
+    width: 40px; height: 40px; border: 3px solid #e2e8f0; border-top-color: #22c55e;
+    border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 12px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .error-screen {
+    position: fixed; inset: 0; padding: 24px; background: #fef2f2; color: #991b1b;
+    font-family: -apple-system, sans-serif; z-index: 10000; display: none;
+  }
+  .error-screen h2 { margin: 0 0 12px; }
+  .error-screen pre {
+    background: white; padding: 12px; border-radius: 6px; font-size: 12px;
+    overflow: auto; max-height: 50vh;
+  }
+</style>
+</head>
+<body>
+<div id="loading" class="loading-screen">
+  <div class="spinner"></div>
+  <div>正在加载 UI...</div>
+  <div style="font-size:12px;margin-top:8px;color:#64748b">首次需下载 React 库（~1MB），约 3-10 秒</div>
+</div>
+<div id="error" class="error-screen">
+  <h2>⚠️ 加载失败</h2>
+  <p>请截图发我，下面是错误信息：</p>
+  <pre id="error-msg"></pre>
+</div>
+<div id="root"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+    "recharts": "https://esm.sh/recharts@2.13.3?deps=react@18.3.1,react-dom@18.3.1"
+  }
+}
+</script>
+
+<script type="module">
+const errorEl = document.getElementById('error');
+const errorMsg = document.getElementById('error-msg');
+const loadingEl = document.getElementById('loading');
+function showError(e) {
+  loadingEl.style.display = 'none';
+  errorEl.style.display = 'block';
+  errorMsg.textContent = (e && (e.stack || e.message)) || String(e);
+  console.error('Preview error:', e);
+}
+window.addEventListener('error', e => showError(e.error || e.message));
+window.addEventListener('unhandledrejection', e => showError(e.reason));
+
+try {
+const { useState, useEffect, useRef, useContext, createContext } = await import('react');
+const { createRoot } = await import('react-dom/client');
+const Recharts = await import('recharts');
+const { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } = Recharts;
+const h = React.createElement;
+const cn = (...args) => args.filter(Boolean).join(' ');
+
+// ============ 简易 Router ============
+const RouterContext = createContext({ path: '/', setPath: () => {} });
+function Router({ children }) {
+  const [path, setPath] = useState(window.location.hash.slice(1) || '/log');
+  useEffect(() => {
+    const onHash = () => setPath(window.location.hash.slice(1) || '/log');
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  return h(RouterContext.Provider, { value: { path, setPath: (p) => { window.location.hash = p; } } }, children);
+}
+function Link({ to, className, children }) {
+  const { setPath } = useContext(RouterContext);
+  return h('a', { href: `#${to}`, onClick: (e) => { e.preventDefault(); setPath(to); }, className }, children);
+}
+function useLocation() { return useContext(RouterContext); }
+
+// ============ UI ============
+function Button({ className, variant = 'default', size = 'default', children, ...props }) {
+  const variants = {
+    default: 'bg-green-600 text-white hover:bg-green-700',
+    secondary: 'bg-slate-100 text-slate-900 hover:bg-slate-200',
+    outline: 'border border-slate-300 bg-white hover:bg-slate-50',
+    ghost: 'hover:bg-slate-100 text-slate-700',
+    destructive: 'bg-red-600 text-white hover:bg-red-700',
+  };
+  const sizes = { default: 'h-9 px-4 text-sm', sm: 'h-8 px-3 text-xs', lg: 'h-10 px-6', icon: 'h-9 w-9' };
+  return h('button', { className: cn('inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors disabled:opacity-50', variants[variant], sizes[size], className), ...props }, children);
+}
+function Input({ className, ...props }) {
+  return h('input', { className: cn('flex h-9 w-full rounded-md border border-slate-300 bg-white px-3 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-green-500', className), ...props });
+}
+function Label({ className, ...props }) {
+  return h('label', { className: cn('text-sm font-medium leading-none', className), ...props });
+}
+function Card({ className, ...props }) { return h('div', { className: cn('rounded-lg border border-slate-200 bg-white shadow-sm', className), ...props }); }
+function CardHeader({ className, ...props }) { return h('div', { className: cn('flex flex-col space-y-1.5 p-6', className), ...props }); }
+function CardTitle({ className, ...props }) { return h('div', { className: cn('text-lg font-semibold leading-none', className), ...props }); }
+function CardContent({ className, ...props }) { return h('div', { className: cn('p-6 pt-0', className), ...props }); }
+
+// ============ 1RM 算法 ============
+function estimateOneRm(weight, reps) {
+  if (reps <= 0 || weight <= 0) return 0;
+  if (reps === 1) return weight;
+  const epley = weight * (1 + reps / 30);
+  const brzycki = (weight * 36) / (37 - reps);
+  const lombardi = weight * Math.pow(reps, 0.1);
+  const mayhew = (100 * weight) / (52.2 + 41.9 * Math.exp(-0.055 * reps));
+  const oconner = weight * (1 + 0.025 * reps);
+  return (epley + brzycki + lombardi + mayhew + oconner) / 5;
+}
+function workingWeight(oneRm, pct) {
+  return Math.round((oneRm * pct) / 2.5) * 2.5;
+}
+
+// ============ Mock 数据 ============
+const EXERCISES = [
+  { id: 1, name: 'Back Squat', primary_muscle: 'Quadriceps', equipment: 'Barbell' },
+  { id: 2, name: 'Barbell Bench Press', primary_muscle: 'Chest', equipment: 'Barbell' },
+  { id: 5, name: 'Pull-Up', primary_muscle: 'Lats', equipment: 'Bodyweight' },
+  { id: 11, name: 'Dumbbell Lateral Raise', primary_muscle: 'Side Delts', equipment: 'Dumbbell' },
+  { id: 3, name: 'Conventional Deadlift', primary_muscle: 'Hamstrings', equipment: 'Barbell' },
+  { id: 4, name: 'Overhead Press', primary_muscle: 'Front Delts', equipment: 'Barbell' },
+  { id: 6, name: 'Barbell Row', primary_muscle: 'Mid Back', equipment: 'Barbell' },
+  { id: 7, name: 'Romanian Deadlift', primary_muscle: 'Hamstrings', equipment: 'Barbell' },
+  { id: 8, name: 'Incline Dumbbell Press', primary_muscle: 'Upper Chest', equipment: 'Dumbbell' },
+  { id: 9, name: 'Bulgarian Split Squat', primary_muscle: 'Quadriceps', equipment: 'Dumbbell' },
+  { id: 10, name: 'Lat Pulldown', primary_muscle: 'Lats', equipment: 'Cable' },
+  { id: 12, name: 'Triceps Pushdown', primary_muscle: 'Triceps', equipment: 'Cable' },
+  { id: 13, name: 'Barbell Curl', primary_muscle: 'Biceps', equipment: 'Barbell' },
+  { id: 14, name: 'Plank', primary_muscle: 'Core', equipment: 'Bodyweight' },
+  { id: 15, name: 'Leg Press', primary_muscle: 'Quadriceps', equipment: 'Machine' },
+];
+const INITIAL_DRAFTS = [
+  { id: 1, exercise_id: 1, set_index: 1, reps: 5, weight_kg: 60, rpe: null, is_warmup: true, notes: '' },
+  { id: 2, exercise_id: 1, set_index: 2, reps: 5, weight_kg: 100, rpe: 7, is_warmup: false, notes: '感觉不错' },
+  { id: 3, exercise_id: 1, set_index: 3, reps: 5, weight_kg: 100, rpe: 8, is_warmup: false, notes: '' },
+  { id: 4, exercise_id: 1, set_index: 4, reps: 5, weight_kg: 100, rpe: 8.5, is_warmup: false, notes: '最后一组吃力' },
+  { id: 5, exercise_id: 2, set_index: 1, reps: 5, weight_kg: 40, rpe: null, is_warmup: true, notes: '' },
+  { id: 6, exercise_id: 2, set_index: 2, reps: 5, weight_kg: 75, rpe: 7, is_warmup: false, notes: '' },
+  { id: 7, exercise_id: 2, set_index: 3, reps: 5, weight_kg: 75, rpe: 8, is_warmup: false, notes: '' },
+  { id: 8, exercise_id: 5, set_index: 1, reps: 8, weight_kg: 0, rpe: 7, is_warmup: false, notes: '自重' },
+  { id: 9, exercise_id: 5, set_index: 2, reps: 7, weight_kg: 0, rpe: 8, is_warmup: false, notes: '' },
+  { id: 10, exercise_id: 11, set_index: 1, reps: 12, weight_kg: 8, rpe: 7, is_warmup: false, notes: '' },
+  { id: 11, exercise_id: 11, set_index: 2, reps: 12, weight_kg: 8, rpe: 7, is_warmup: false, notes: '' },
+  { id: 12, exercise_id: 11, set_index: 3, reps: 12, weight_kg: 8, rpe: 8, is_warmup: false, notes: '' },
+];
+const RECENT_SESSIONS = [
+  { id: 99, date: '2026-08-26', name: '训练 2026-08-26', exercise_count: 5, work_set_count: 18 },
+  { id: 98, date: '2026-08-24', name: '训练 2026-08-24', exercise_count: 4, work_set_count: 14 },
+  { id: 97, date: '2026-08-22', name: '训练 2026-08-22', exercise_count: 6, work_set_count: 22 },
+  { id: 96, date: '2026-08-20', name: '训练 2026-08-20', exercise_count: 5, work_set_count: 16 },
+  { id: 95, date: '2026-08-18', name: '训练 2026-08-18', exercise_count: 4, work_set_count: 15 },
+];
+const PROGRESS_DATA = [
+  { date: '08-01', 'Back Squat': 105, 'Barbell Bench Press': 82, 'Conventional Deadlift': 130, 'Overhead Press': 50 },
+  { date: '08-05', 'Back Squat': 108, 'Barbell Bench Press': 82, 'Conventional Deadlift': 132, 'Overhead Press': 52 },
+  { date: '08-08', 'Back Squat': 110, 'Barbell Bench Press': 85, 'Conventional Deadlift': 135, 'Overhead Press': 52 },
+  { date: '08-12', 'Back Squat': 112, 'Barbell Bench Press': 85, 'Conventional Deadlift': 138, 'Overhead Press': 55 },
+  { date: '08-15', 'Back Squat': 115, 'Barbell Bench Press': 87, 'Conventional Deadlift': 140, 'Overhead Press': 55 },
+  { date: '08-19', 'Back Squat': 117, 'Barbell Bench Press': 90, 'Conventional Deadlift': 145, 'Overhead Press': 57 },
+  { date: '08-22', 'Back Squat': 120, 'Barbell Bench Press': 90, 'Conventional Deadlift': 148, 'Overhead Press': 58 },
+  { date: '08-26', 'Back Squat': 122, 'Barbell Bench Press': 92, 'Conventional Deadlift': 150, 'Overhead Press': 60 },
+];
+
+// ============ Pages ============
+function LogPage() {
+  const [drafts, setDrafts] = useState(INITIAL_DRAFTS);
+  const [filter, setFilter] = useState('');
+  const [savedAt, setSavedAt] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const updateDraft = (id, patch) => setDrafts(drafts.map(d => d.id === id ? { ...d, ...patch } : d));
+  const removeSet = (id) => setDrafts(drafts.filter(d => d.id !== id));
+  const save = () => {
+    setSaving(true);
+    setTimeout(() => { setSavedAt(new Date()); setSaving(false); }, 600);
+  };
+
+  const grouped = (() => {
+    const m = new Map();
+    for (const d of drafts) {
+      if (!m.has(d.exercise_id)) m.set(d.exercise_id, []);
+      m.get(d.exercise_id).push(d);
+    }
+    return Array.from(m.entries());
+  })();
+  const filtered = EXERCISES.filter(e => e.name.toLowerCase().includes(filter.toLowerCase()));
+
+  return h('div', { className: 'p-4 md:p-6 max-w-6xl mx-auto' },
+    h('div', { className: 'flex items-center justify-between mb-4' },
+      h('div', null,
+        h('h1', { className: 'text-xl md:text-2xl font-semibold' }, '训练日志'),
+        h('p', { className: 'text-sm text-slate-500' },
+          '训练 2026-08-27 · 今日',
+          savedAt && h('span', { className: 'ml-2 text-green-600' }, '已保存 ' + savedAt.toTimeString().slice(0, 8))
+        )
+      ),
+      h(Button, { onClick: save, disabled: saving }, saving ? '保存中...' : '💾 保存训练')
+    ),
+    h('div', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-4' },
+      h('div', { className: 'lg:col-span-2 space-y-4' },
+        ...grouped.map(([exId, sets]) => {
+          const ex = EXERCISES.find(e => e.id === exId);
+          return h(Card, { key: exId },
+            h(CardHeader, { className: 'pb-3' },
+              h('div', { className: 'flex items-center justify-between' },
+                h('div', null,
+                  h(CardTitle, { className: 'text-base' }, ex.name),
+                  h('p', { className: 'text-xs text-slate-500 mt-1' }, `${ex.primary_muscle} · ${ex.equipment}`)
+                ),
+                h(Button, { size: 'sm', variant: 'ghost' }, '+ 加组')
+              )
+            ),
+            h(CardContent, null,
+              h('div', { className: 'space-y-2' },
+                h('div', { className: 'grid grid-cols-12 gap-1 text-xs text-slate-500 px-1' },
+                  h('div', { className: 'col-span-2' }, '类型'),
+                  h('div', { className: 'col-span-2' }, '次数'),
+                  h('div', { className: 'col-span-2' }, '重量'),
+                  h('div', { className: 'col-span-2' }, 'RPE'),
+                  h('div', { className: 'col-span-2' }, '1RM'),
+                  h('div', { className: 'col-span-1' }, ''),
+                  h('div', { className: 'col-span-1' }, '')
+                ),
+                ...sets.sort((a, b) => a.set_index - b.set_index).map(s => {
+                  const oneRm = estimateOneRm(s.weight_kg, s.reps);
+                  return h('div', { key: s.id, className: 'grid grid-cols-12 gap-1 items-center' },
+                    h('div', { className: 'col-span-2' },
+                      h('button', { onClick: () => updateDraft(s.id, { is_warmup: !s.is_warmup }),
+                        className: cn('text-xs px-2 py-1 rounded w-full', s.is_warmup ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700') },
+                        s.is_warmup ? '热身' : '工作组'
+                      )
+                    ),
+                    h('div', { className: 'col-span-2' }, h(Input, { type: 'number', value: s.reps, onChange: e => updateDraft(s.id, { reps: +e.target.value || 0 }) })),
+                    h('div', { className: 'col-span-2' }, h(Input, { type: 'number', step: '0.5', value: s.weight_kg, onChange: e => updateDraft(s.id, { weight_kg: +e.target.value || 0 }) })),
+                    h('div', { className: 'col-span-2' }, h(Input, { type: 'number', step: '0.5', placeholder: '-', value: s.rpe ?? '', onChange: e => updateDraft(s.id, { rpe: e.target.value ? +e.target.value : null }) })),
+                    h('div', { className: 'col-span-2 text-sm font-medium' }, oneRm.toFixed(1)),
+                    h('div', { className: 'col-span-1 flex justify-end' },
+                      h(Button, { size: 'icon', variant: 'ghost', onClick: () => removeSet(s.id) }, '×')
+                    )
+                  );
+                })
+              )
+            )
+          );
+        })
+      ),
+      h('div', { className: 'space-y-4' },
+        h(Card, null,
+          h(CardHeader, { className: 'pb-3' }, h(CardTitle, { className: 'text-base' }, '添加动作')),
+          h(CardContent, { className: 'space-y-2' },
+            h(Input, { placeholder: '搜索动作...', value: filter, onChange: e => setFilter(e.target.value) }),
+            h('div', { className: 'max-h-96 overflow-y-auto space-y-1' },
+              ...filtered.slice(0, 12).map(ex =>
+                h('button', { key: ex.id, className: 'w-full text-left px-3 py-2 rounded hover:bg-slate-100 text-sm' },
+                  h('div', { className: 'font-medium' }, ex.name),
+                  h('div', { className: 'text-xs text-slate-500' }, `${ex.primary_muscle} · ${ex.equipment}`)
+                )
+              )
+            )
+          )
+        ),
+        h(Card, null,
+          h(CardHeader, { className: 'pb-3' }, h(CardTitle, { className: 'text-base' }, '最近训练')),
+          h(CardContent, { className: 'space-y-3 text-sm' },
+            ...RECENT_SESSIONS.map(s =>
+              h('div', { key: s.id, className: 'border-b last:border-0 pb-2 last:pb-0' },
+                h('div', { className: 'font-medium' }, s.date),
+                h('div', { className: 'text-xs text-slate-500' }, `${s.exercise_count} 个动作 · ${s.work_set_count} 个工作组`)
+              )
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+function PlansPage() {
+  const [cfg, setCfg] = useState({ squat_tm: 140, bench_tm: 100, deadlift_tm: 180, ohp_tm: 60 });
+  const [weeks, setWeeks] = useState(4);
+  const [generated, setGenerated] = useState(null);
+  const WEEK_SCHEMES = [
+    [{ reps: 5, pct: 0.65 }, { reps: 5, pct: 0.75 }, { reps: 5, pct: 0.85, is_amrap: true }],
+    [{ reps: 5, pct: 0.7 }, { reps: 3, pct: 0.8 }, { reps: 3, pct: 0.9, is_amrap: true }],
+    [{ reps: 5, pct: 0.75 }, { reps: 3, pct: 0.85 }, { reps: 1, pct: 0.95, is_amrap: true }],
+    [{ reps: 5, pct: 0.4 }, { reps: 5, pct: 0.5 }, { reps: 5, pct: 0.6 }],
+  ];
+  const LIFT_SCHEDULE = { 1: ['squat', 'bench'], 2: ['deadlift', 'ohp'], 3: ['squat', 'bench'], 4: ['deadlift', 'ohp'] };
+  const LIFT_NAMES = { squat: '深蹲', bench: '卧推', deadlift: '硬拉', ohp: '推举' };
+  const generate = () => {
+    const tms = { squat: cfg.squat_tm, bench: cfg.bench_tm, deadlift: cfg.deadlift_tm, ohp: cfg.ohp_tm };
+    const out = [];
+    for (let w = 1; w <= weeks; w++) {
+      const scheme = WEEK_SCHEMES[(w - 1) % 4];
+      for (let d = 1; d <= 4; d++) {
+        for (const lift of LIFT_SCHEDULE[d]) {
+          const tm = tms[lift];
+          for (let s = 0; s < scheme.length; s++) {
+            const set = scheme[s];
+            out.push({ week: w, day: d, lift, set_index: s + 1, reps: set.reps, weight: workingWeight(tm, set.pct), pct: set.pct, is_amrap: set.is_amrap });
+          }
+        }
+      }
+    }
+    setGenerated(out);
+  };
+  return h('div', { className: 'p-4 md:p-6 max-w-6xl mx-auto' },
+    h('h1', { className: 'text-xl md:text-2xl font-semibold mb-2' }, '训练计划生成器'),
+    h('p', { className: 'text-sm text-slate-500 mb-6' }, '5/3/1 周期化模板 - 基于 Jim Wendler 方法'),
+    h('div', { className: 'grid grid-cols-1 md:grid-cols-3 gap-4 mb-6' },
+      h(Card, null,
+        h(CardHeader, null, h(CardTitle, { className: 'text-base' }, '训练最大重量 (TM)')),
+        h(CardContent, { className: 'space-y-3' },
+          ['squat_tm', 'bench_tm', 'deadlift_tm', 'ohp_tm'].map((key, i) =>
+            h('div', { key },
+              h(Label, null, ['深蹲', '卧推', '硬拉', '推举'][i] + ' TM (kg)'),
+              h(Input, { type: 'number', step: '2.5', value: cfg[key], onChange: e => setCfg({ ...cfg, [key]: +e.target.value || 0 }) })
+            )
+          )
+        )
+      ),
+      h(Card, null,
+        h(CardHeader, null, h(CardTitle, { className: 'text-base' }, '周期设置')),
+        h(CardContent, { className: 'space-y-3' },
+          h('div', null, h(Label, null, '周数'), h(Input, { type: 'number', min: 1, max: 12, value: weeks, onChange: e => setWeeks(+e.target.value || 1) })),
+          h('div', { className: 'flex flex-col gap-2 pt-2' },
+            h(Button, { onClick: generate }, '生成计划'),
+            generated && h(Button, { variant: 'outline', onClick: () => alert('已导出 (mock)') }, '📥 导出 JSON')
+          )
+        )
+      ),
+      h(Card, null,
+        h(CardHeader, null, h(CardTitle, { className: 'text-base' }, '5/3/1 说明')),
+        h(CardContent, { className: 'text-sm space-y-2 text-slate-600' },
+          h('p', null, '· TM ≈ 真实 1RM 的 90%'),
+          h('p', null, '· 周 1: 3x5 @ 65/75/85%'),
+          h('p', null, '· 周 2: 3x3 @ 70/80/90%'),
+          h('p', null, '· 周 3: 5/3/1 @ 75/85/95%'),
+          h('p', null, '· 周 4: Deload 3x5 @ 40/50/60%')
+        )
+      )
+    ),
+    generated && h(Card, null,
+      h(CardHeader, null, h(CardTitle, null, '计划预览')),
+      h(CardContent, null,
+        h('div', { className: 'overflow-x-auto' },
+          h('table', { className: 'w-full text-sm' },
+            h('thead', { className: 'border-b text-xs text-slate-500' },
+              h('tr', null,
+                ['周', '日', '动作', '组', '次数', '%TM', '重量'].map(t => h('th', { key: t, className: 'text-left p-2' }, t))
+              )
+            ),
+            h('tbody', null,
+              ...generated.map((s, i) =>
+                h('tr', { key: i, className: 'border-b last:border-0' },
+                  h('td', { className: 'p-2 font-medium' }, `W${s.week}`),
+                  h('td', { className: 'p-2' }, `D${s.day}`),
+                  h('td', { className: 'p-2' }, LIFT_NAMES[s.lift]),
+                  h('td', { className: 'p-2' }, s.set_index),
+                  h('td', { className: 'p-2' }, `${s.reps}${s.is_amrap ? '+' : ''}`),
+                  h('td', { className: 'p-2' }, `${(s.pct * 100).toFixed(0)}%`),
+                  h('td', { className: 'p-2 font-mono' }, s.weight)
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+function ProgressPage() {
+  const [selected, setSelected] = useState(['Back Squat', 'Barbell Bench Press', 'Conventional Deadlift', 'Overhead Press']);
+  const colors = ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444'];
+  const allExercises = ['Back Squat', 'Barbell Bench Press', 'Conventional Deadlift', 'Overhead Press', 'Romanian Deadlift', 'Pull-Up'];
+  return h('div', { className: 'p-4 md:p-6 max-w-6xl mx-auto' },
+    h('h1', { className: 'text-xl md:text-2xl font-semibold mb-2' }, '进度追踪'),
+    h('p', { className: 'text-sm text-slate-500 mb-6' }, '估算 1RM 趋势 - 多公式平均'),
+    h(Card, { className: 'mb-4' },
+      h(CardHeader, null, h(CardTitle, { className: 'text-base' }, '选择追踪的动作（最多 6 个）')),
+      h(CardContent, null,
+        h('div', { className: 'flex flex-wrap gap-2' },
+          ...allExercises.map(name =>
+            h('button', { key: name, onClick: () => setSelected(prev => prev.includes(name) ? prev.filter(x => x !== name) : [...prev, name].slice(-6)),
+              className: cn('text-xs px-3 py-1.5 rounded-full border transition-colors', selected.includes(name) ? 'bg-green-600 text-white border-green-600' : 'border-slate-300 hover:bg-slate-100') },
+              name
+            )
+          )
+        )
+      )
+    ),
+    h(Card, null,
+      h(CardHeader, null, h(CardTitle, null, '1RM 趋势 (kg)')),
+      h(CardContent, null,
+        h(ResponsiveContainer, { width: '100%', height: 360 },
+          h(LineChart, { data: PROGRESS_DATA },
+            h(CartesianGrid, { strokeDasharray: '3 3', stroke: '#e2e8f0' }),
+            h(XAxis, { dataKey: 'date', stroke: '#64748b', fontSize: 12 }),
+            h(YAxis, { stroke: '#64748b', fontSize: 12 }),
+            h(Tooltip, null),
+            h(Legend, null),
+            ...selected.map((name, i) =>
+              h(Line, { key: name, type: 'monotone', dataKey: name, stroke: colors[i % colors.length], strokeWidth: 2, dot: { r: 3 }, connectNulls: true })
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+function CoachPage() {
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: '你好！我是你的 AI 健身教练。\n\n我看到你最近训练：\n· 2026-08-26: 5 个动作 18 个工作组\n· 主项 1RM 估算: 蹲 122 / 推 92 / 拉 150\n\n想聊点什么？', ts: Date.now() - 60000 },
+  ]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const scrollRef = useRef(null);
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, loading]);
+  const send = () => {
+    const text = input.trim();
+    if (!text || loading) return;
+    const userMsg = { role: 'user', content: text, ts: Date.now() };
+    setMessages(prev => [...prev, userMsg]);
+    setInput('');
+    setLoading(true);
+    setTimeout(() => {
+      const replies = [
+        '看你最近深蹲从 105 涨到 122，4 周 +17kg，速度不错。\n\n建议：\n1. 继续 5/3/1，下周期 TM 涨 5kg\n2. 每周最多 1 次接近极限的 AMRAP\n3. 深蹲日和硬拉日隔 48 小时',
+        '这个速度挺猛，但 RPE 8.5 才 5 次。\n\n· 100kg 5x5 把 RPE 稳定在 7-8\n· 等 RPE 7 稳定 3 个训练日再加 2.5kg\n· 大概 2-3 周后再测\n\n过度训练比少练更亏。',
+        '一周 4 练合理安排：\n\n周一: 深蹲 + 卧推\n周三: 硬拉 + 推举\n周五: 深蹲 + 卧推\n周日: 硬拉 + 推举（轻）'
+      ];
+      setMessages(prev => [...prev, { role: 'assistant', content: replies[Math.floor(Math.random() * replies.length)], ts: Date.now() }]);
+      setLoading(false);
+    }, 1000);
+  };
+  return h('div', { className: 'p-4 md:p-6 max-w-4xl mx-auto h-screen flex flex-col' },
+    h('div', { className: 'mb-4' },
+      h('h1', { className: 'text-xl md:text-2xl font-semibold' }, '🤖 AI 教练'),
+      h('p', { className: 'text-sm text-slate-500 mt-1' }, '⚠️ 当前是 mock 模式，未调用真实 API')
+    ),
+    h('div', { className: 'flex-1 overflow-hidden flex flex-col gap-3' },
+      h('div', { ref: scrollRef, className: 'flex-1 overflow-y-auto space-y-3 pr-2' },
+        ...messages.map((m, i) =>
+          h('div', { key: i, className: cn('flex gap-2', m.role === 'user' ? 'justify-end' : 'justify-start') },
+            m.role === 'assistant' && h('div', { className: 'w-8 h-8 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0 text-green-600' }, '🤖'),
+            h('div', { className: cn('max-w-[75%] rounded-lg px-4 py-2.5 text-sm whitespace-pre-wrap', m.role === 'user' ? 'bg-green-600 text-white' : 'bg-white border border-slate-200') }, m.content),
+            m.role === 'user' && h('div', { className: 'w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center flex-shrink-0' }, '👤')
+          )
+        ),
+        loading && h('div', { className: 'flex gap-2' },
+          h('div', { className: 'w-8 h-8 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0 text-green-600' }, '🤖'),
+          h('div', { className: 'bg-white border border-slate-200 rounded-lg px-4 py-2.5 text-sm text-slate-500' }, '思考中...')
+        )
+      ),
+      h('div', { className: 'flex gap-2' },
+        h(Input, { placeholder: '问点什么...', value: input, onChange: e => setInput(e.target.value), onKeyDown: e => { if (e.key === 'Enter') send(); }, disabled: loading }),
+        h(Button, { onClick: send, disabled: loading || !input.trim() }, '发送')
+      )
+    )
+  );
+}
+
+function SettingsPage() {
+  const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1');
+  const [apiKey, setApiKey] = useState('');
+  const [model, setModel] = useState('gpt-4o-mini');
+  const [exCount, setExCount] = useState(0);
+  const [testResult, setTestResult] = useState(null);
+  return h('div', { className: 'p-4 md:p-6 max-w-3xl mx-auto space-y-4' },
+    h('h1', { className: 'text-xl md:text-2xl font-semibold mb-2' }, '设置'),
+    h(Card, null,
+      h(CardHeader, null, h(CardTitle, null, 'AI API 配置')),
+      h(CardContent, { className: 'space-y-3' },
+        h('p', { className: 'text-sm text-slate-500' }, '支持 OpenAI / DeepSeek / OpenRouter / 自部署 vLLM 等。'),
+        h('div', null, h(Label, null, 'Base URL'), h(Input, { value: baseUrl, onChange: e => setBaseUrl(e.target.value) })),
+        h('div', null, h(Label, null, 'API Key'), h(Input, { type: 'password', value: apiKey, onChange: e => setApiKey(e.target.value), placeholder: 'sk-...' })),
+        h('div', null, h(Label, null, 'Model'), h(Input, { value: model, onChange: e => setModel(e.target.value) })),
+        h('div', { className: 'flex gap-2' },
+          h(Button, { onClick: () => setTestResult('✅ 已保存（mock）') }, '💾 保存'),
+          h(Button, { variant: 'outline', onClick: () => setTestResult('❌ 请先填入 API Key') }, '测试连接')
+        ),
+        testResult && h('p', { className: 'text-sm bg-slate-100 p-2 rounded' }, testResult)
+      )
+    ),
+    h(Card, null,
+      h(CardHeader, null, h(CardTitle, null, '动作库')),
+      h(CardContent, null,
+        h('p', { className: 'text-sm text-slate-500 mb-3' }, `数据库中已有 ${exCount} 个动作。`),
+        h(Button, { onClick: () => { setExCount(50); setTestResult('✅ 导入 50 个核心动作（mock）'); } }, '导入 50 个核心动作')
+      )
+    )
+  );
+}
+
+// ============ App Shell ============
+function App() {
+  const { path } = useLocation();
+  const navItems = [
+    { to: '/log', label: '训练日志', icon: '🏋️' },
+    { to: '/plans', label: '训练计划', icon: '📋' },
+    { to: '/progress', label: '进度追踪', icon: '📈' },
+    { to: '/coach', label: 'AI 教练', icon: '🤖' },
+    { to: '/settings', label: '设置', icon: '⚙️' },
+  ];
+  let page;
+  if (path === '/log' || path === '/') page = h(LogPage);
+  else if (path === '/plans') page = h(PlansPage);
+  else if (path === '/progress') page = h(ProgressPage);
+  else if (path === '/coach') page = h(CoachPage);
+  else if (path === '/settings') page = h(SettingsPage);
+  else page = h('div', { className: 'p-6' }, '404 - 页面不存在');
+  return h('div', { className: 'flex h-screen overflow-hidden bg-slate-50' },
+    h('aside', { className: 'w-48 md:w-56 border-r border-slate-200 bg-white flex flex-col flex-shrink-0' },
+      h('div', { className: 'px-4 py-4 border-b border-slate-200' },
+        h('h1', { className: 'text-base font-semibold flex items-center gap-2' },
+          h('span', { className: 'text-green-600' }, '🏋️'),
+          'Agent Fitness'
+        ),
+        h('p', { className: 'text-xs text-slate-500 mt-1' }, 'Local-first AI coach')
+      ),
+      h('nav', { className: 'flex-1 p-2 space-y-1' },
+        ...navItems.map(item =>
+          h(Link, { key: item.to, to: item.to,
+            className: cn('flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors',
+              path === item.to ? 'bg-green-600 text-white' : 'hover:bg-slate-100 text-slate-700'
+            ) },
+            h('span', null, item.icon),
+            item.label
+          )
+        )
+      ),
+      h('div', { className: 'p-3 border-t border-slate-200 text-xs text-slate-400' }, 'v0.1.0 · preview')
+    ),
+    h('main', { className: 'flex-1 overflow-auto' }, page)
+  );
+}
+
+// 挂载
+loadingEl.style.opacity = '0';
+setTimeout(() => loadingEl.remove(), 300);
+createRoot(document.getElementById('root')).render(h(Router, null, h(App)));
+
+} catch (e) {
+  showError(e);
+}
+</script>
+</body>
+</html>
