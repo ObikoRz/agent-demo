@@ -65,7 +65,8 @@ window.addEventListener('error', e => showError(e.error || e.message));
 window.addEventListener('unhandledrejection', e => showError(e.reason));
 
 try {
-const { useState, useEffect, useRef, useContext, createContext } = await import('react');
+const React = await import('react');
+const { useState, useEffect, useRef, useContext, createContext } = React;
 const { createRoot } = await import('react-dom/client');
 const Recharts = await import('recharts');
 const { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } = Recharts;
